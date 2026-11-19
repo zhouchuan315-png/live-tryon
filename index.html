@@ -1,0 +1,894 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Live Try-On — 浏览器端实时虚拟试衣</title>
+<meta name="description" content="用一张衣服图和摄像头，在浏览器里实时把衣服贴到身上。MediaPipe 姿态驱动网格形变，零依赖零构建。" />
+<style>
+  :root {
+    --bg: #f6f5f2;
+    --card: #ffffff;
+    --line: #e3e1da;
+    --ink: #2c2c2a;
+    --ink2: #6b6a64;
+    --ink3: #9a988f;
+    --accent: #0f6e56;
+    --accent-soft: #e1f5ee;
+    --stage: #201f1d;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    font-size: 13px;
+    line-height: 1.6;
+  }
+  .app { display: flex; gap: 16px; padding: 16px; height: 100vh; }
+
+  .stage {
+    position: relative;
+    flex: 1 1 auto;
+    min-width: 0;
+    background: var(--stage);
+    border-radius: 14px;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  #out { max-width: 100%; max-height: 100%; object-fit: contain; display: block; }
+
+  .gate {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    background: #201f1d;
+    text-align: center;
+    padding: 24px;
+    transition: opacity 0.3s;
+  }
+  .gate.hide { opacity: 0; pointer-events: none; }
+  .gate-title { color: #f2f0ea; font-size: 20px; font-weight: 500; }
+  .gate-sub { color: #9a988f; font-size: 13px; margin-bottom: 8px; }
+  .gate-actions { display: flex; gap: 10px; }
+  .gate-actions button {
+    font: inherit;
+    font-size: 13px;
+    padding: 9px 18px;
+    border-radius: 999px;
+    border: 1px solid #4a4843;
+    background: transparent;
+    color: #f2f0ea;
+    cursor: pointer;
+    transition: background 0.2s, border-color 0.2s;
+  }
+  .gate-actions button:hover:not(:disabled) { background: #2e2d2a; border-color: #6b6a64; }
+  .gate-actions button.primary { background: var(--accent); border-color: var(--accent); }
+  .gate-actions button.primary:hover:not(:disabled) { background: #0d5c48; border-color: #0d5c48; }
+  .gate-actions button:disabled { opacity: 0.4; cursor: default; }
+  .gate-status { color: #6b6a64; font-size: 12px; margin-top: 6px; min-height: 18px; }
+
+  .hint {
+    position: absolute;
+    left: 50%;
+    bottom: 16px;
+    transform: translateX(-50%);
+    background: rgba(0, 0, 0, 0.55);
+    color: #f2f0ea;
+    padding: 7px 14px;
+    border-radius: 999px;
+    font-size: 12px;
+    white-space: nowrap;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.25s;
+  }
+  .hint.on { opacity: 1; }
+
+  .panel {
+    width: 272px;
+    flex: 0 0 272px;
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 16px;
+    overflow-y: auto;
+  }
+  .panel h1 { font-size: 15px; font-weight: 500; margin: 0 0 2px; }
+  .panel .sub { color: var(--ink2); font-size: 12px; margin: 0 0 16px; }
+
+  .seg {
+    display: flex;
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    overflow: hidden;
+    margin-bottom: 14px;
+  }
+  .seg button {
+    flex: 1;
+    font: inherit;
+    font-size: 12px;
+    padding: 7px 0;
+    border: 0;
+    background: transparent;
+    color: var(--ink2);
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+  }
+  .seg button + button { border-left: 1px solid var(--line); }
+  .seg button.on { background: var(--accent-soft); color: var(--accent); font-weight: 500; }
+
+  .drop {
+    border: 1px dashed var(--line);
+    border-radius: 10px;
+    padding: 13px;
+    text-align: center;
+    color: var(--ink2);
+    cursor: pointer;
+    transition: border-color 0.2s, background 0.2s;
+    margin-bottom: 10px;
+  }
+  .drop:hover, .drop.over { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+  .drop b { font-weight: 500; display: block; margin-bottom: 2px; color: var(--ink); }
+  .drop:hover b, .drop.over b { color: var(--accent); }
+
+  #thumb {
+    display: none;
+    width: 100%;
+    height: 104px;
+    object-fit: contain;
+    border-radius: 10px;
+    border: 1px solid var(--line);
+    background: #faf9f6;
+    margin-bottom: 10px;
+  }
+
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+  .row label { color: var(--ink2); font-size: 12px; white-space: nowrap; }
+  .row .val { color: var(--ink3); font-size: 12px; font-variant-numeric: tabular-nums; min-width: 34px; text-align: right; }
+  input[type=range] { width: 100%; accent-color: var(--accent); height: 18px; margin: 0 0 8px; }
+
+  .check { display: flex; align-items: center; gap: 7px; color: var(--ink2); font-size: 12px; margin-bottom: 8px; cursor: pointer; }
+  .check input { accent-color: var(--accent); margin: 0; }
+
+  .sep { height: 1px; background: var(--line); margin: 13px 0; }
+  .tip { background: #faf9f6; border-radius: 10px; padding: 10px 12px; color: var(--ink2); font-size: 12px; }
+  .tip b { color: var(--ink); font-weight: 500; }
+  .stat { display: flex; justify-content: space-between; color: var(--ink3); font-size: 12px; font-variant-numeric: tabular-nums; }
+
+  @media (max-width: 760px) {
+    .app { flex-direction: column; height: auto; }
+    .panel { width: auto; flex: none; }
+    .stage { height: 54vh; flex: none; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="stage">
+    <canvas id="out"></canvas>
+    <div class="hint" id="hint"></div>
+    <div class="gate" id="gate">
+      <div class="gate-title">实时试衣</div>
+      <div class="gate-sub">一张衣服图 + 摄像头，把衣服贴到你身上</div>
+      <div class="gate-actions">
+        <button id="btnCam" class="primary" disabled>开启摄像头</button>
+        <button id="btnPhoto" disabled>用照片试试</button>
+      </div>
+      <div class="gate-status" id="gateStatus">正在加载姿态模型…</div>
+    </div>
+  </div>
+
+  <aside class="panel">
+    <h1>Live Try-On</h1>
+    <p class="sub">实时虚拟试衣 · 纯前端</p>
+
+    <div class="seg">
+      <button id="tabCam" class="on">摄像头</button>
+      <button id="tabPhoto">照片</button>
+    </div>
+
+    <div id="panePhoto" style="display:none">
+      <div class="drop" id="dropPhoto">
+        <b>上传人像照片</b>
+        <span>半身或全身正面照</span>
+      </div>
+    </div>
+
+    <div class="drop" id="drop">
+      <b>上传衣服图</b>
+      <span>平铺正面图 · 白底或透明底最好</span>
+    </div>
+    <input type="file" id="file" accept="image/*" hidden />
+    <input type="file" id="filePhoto" accept="image/*" hidden />
+    <canvas id="thumb"></canvas>
+
+    <label class="check"><input type="checkbox" id="cutWhite" checked /> 自动去除白色背景</label>
+    <label class="check"><input type="checkbox" id="lightMix" checked /> 光照融合</label>
+    <label class="check"><input type="checkbox" id="showMesh" /> 显示形变网格</label>
+
+    <div class="sep"></div>
+
+    <div class="row"><label>衣服宽度</label><span class="val" id="vW">106%</span></div>
+    <input type="range" id="sW" min="60" max="160" value="106" />
+
+    <div class="row"><label>衣服长度</label><span class="val" id="vH">100%</span></div>
+    <input type="range" id="sH" min="60" max="170" value="100" />
+
+    <div class="row"><label>上下位置</label><span class="val" id="vY">0</span></div>
+    <input type="range" id="sY" min="-40" max="40" value="0" />
+
+    <div class="row"><label>融合强度</label><span class="val" id="vA">96%</span></div>
+    <input type="range" id="sA" min="30" max="100" value="96" />
+
+    <div class="row"><label>光照校正</label><span class="val" id="vL">100%</span></div>
+    <input type="range" id="sL" min="0" max="100" value="100" />
+
+    <div class="sep"></div>
+    <div class="stat"><span>帧率</span><span id="fps">—</span></div>
+
+    <div class="tip" style="margin-top:12px">
+      <b>怎么调效果</b><br />
+      贴歪了动「宽度 / 长度」；<br />
+      领口位置不对动「上下位置」；<br />
+      想看到网格形变就勾上「显示形变网格」。
+    </div>
+  </aside>
+</div>
+
+<video id="video" playsinline muted style="display:none"></video>
+
+<script type="module">
+const CDN = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
+const MODEL_URL =
+  "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task";
+
+const COLS = 3;
+const ROWS = 4;
+
+const video = document.getElementById("video");
+const canvas = document.getElementById("out");
+const ctx = canvas.getContext("2d");
+const hint = document.getElementById("hint");
+const fpsEl = document.getElementById("fps");
+const gate = document.getElementById("gate");
+const gateStatus = document.getElementById("gateStatus");
+const btnCam = document.getElementById("btnCam");
+const btnPhoto = document.getElementById("btnPhoto");
+
+const S = {
+  mode: null,
+  ready: false,
+  switching: false,
+  photo: null,
+  photoDirty: false,
+  needRender: false,
+  shirt: null,
+  shirtW: 0,
+  shirtH: 0,
+  shirtLuma: 128,
+  ambientLuma: 128,
+  alpha: 0.96,
+  widthScale: 1.06,
+  heightScale: 1.0,
+  yShift: 0,
+  lightMix: true,
+  lightStrength: 1.0,
+  showMesh: false,
+  smooth: null,
+  pose: null,
+  lastTime: -1,
+  rendered: 0,
+  fpsClock: 0
+};
+
+let landmarker = null;
+const amb = document.createElement("canvas");
+amb.width = 24;
+amb.height = 24;
+const ambCtx = amb.getContext("2d", { willReadFrequently: true });
+
+/* ---------------- 启动 ---------------- */
+
+async function boot() {
+  try {
+    const { FilesetResolver, PoseLandmarker } = await import(`${CDN}/vision_bundle.mjs`);
+    const vision = await FilesetResolver.forVisionTasks(`${CDN}/wasm`);
+    const opts = (delegate) => ({
+      baseOptions: { modelAssetPath: MODEL_URL, delegate },
+      runningMode: "VIDEO",
+      numPoses: 1
+    });
+    try {
+      landmarker = await PoseLandmarker.createFromOptions(vision, opts("GPU"));
+    } catch (e) {
+      landmarker = await PoseLandmarker.createFromOptions(vision, opts("CPU"));
+    }
+  } catch (e) {
+    gateStatus.textContent = "模型加载失败，请检查网络后刷新";
+    console.error(e);
+    return;
+  }
+
+  S.ready = true;
+  gateStatus.textContent = "模型就绪";
+  btnCam.disabled = false;
+  btnPhoto.disabled = false;
+  requestAnimationFrame(loop);
+}
+
+/* ---------------- 模式切换 ---------------- */
+
+async function enterCamera() {
+  if (S.switching) return;
+  S.switching = true;
+  btnCam.disabled = btnPhoto.disabled = true;
+  gateStatus.textContent = "正在打开摄像头…";
+  await setRunningMode("VIDEO");
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 960 } },
+      audio: false
+    });
+    video.srcObject = stream;
+    await video.play();
+    await new Promise((r) => {
+      if (video.videoWidth) return r();
+      video.onloadedmetadata = r;
+    });
+  } catch (e) {
+    console.error(e);
+    S.switching = false;
+    gateStatus.textContent = "没有可用的摄像头，已切换到照片模式";
+    setTimeout(() => enterPhoto(), 900);
+    return;
+  }
+
+  resizeTo(video.videoWidth, video.videoHeight);
+  S.mode = "camera";
+  S.switching = false;
+  S.smooth = null;
+  S.lastTime = -1;
+  hideGate();
+  updateTabs();
+  hint.textContent = "站到画面中间，让上半身完整入镜";
+  hint.classList.add("on");
+  btnCam.disabled = btnPhoto.disabled = false;
+}
+
+async function enterPhoto() {
+  if (S.switching) return;
+  S.switching = true;
+  btnCam.disabled = btnPhoto.disabled = false;
+  await setRunningMode("IMAGE");
+  S.mode = "photo";
+  S.switching = false;
+  S.smooth = null;
+  hideGate();
+  updateTabs();
+  if (!S.photo) {
+    gate.classList.remove("hide");
+    gateStatus.textContent = "请先在右侧上传一张人像照片";
+    return;
+  }
+  S.photoDirty = true;
+  S.needRender = true;
+}
+
+async function setRunningMode(mode) {
+  if (!landmarker) return;
+  try {
+    await landmarker.setOptions({ runningMode: mode });
+  } catch (e) {
+    console.warn("切换运行模式失败", e);
+  }
+}
+
+function hideGate() {
+  gate.classList.add("hide");
+}
+
+function updateTabs() {
+  const cam = S.mode === "camera";
+  document.getElementById("tabCam").classList.toggle("on", cam);
+  document.getElementById("tabPhoto").classList.toggle("on", !cam);
+  document.getElementById("panePhoto").style.display = cam ? "none" : "block";
+}
+
+function resizeTo(w, h) {
+  if (!w || !h) return;
+  const s = Math.min(1, 900 / w);
+  canvas.width = Math.round(w * s);
+  canvas.height = Math.round(h * s);
+}
+
+/* ---------------- 主循环 ---------------- */
+
+function loop() {
+  requestAnimationFrame(loop);
+  if (!landmarker || !S.mode || S.switching) return;
+
+  if (S.mode === "camera") {
+    if (video.readyState < 2) return;
+    if (video.currentTime !== S.lastTime) {
+      S.lastTime = video.currentTime;
+      try {
+        const res = landmarker.detectForVideo(video, performance.now());
+        S.pose = res && res.landmarks && res.landmarks[0] ? res.landmarks[0] : null;
+      } catch (e) {}
+    }
+    render();
+    S.rendered++;
+  } else {
+    if (S.photoDirty && S.photo) {
+      S.photoDirty = false;
+      try {
+        const res = landmarker.detect(S.photo);
+        S.pose = res && res.landmarks && res.landmarks[0] ? res.landmarks[0] : null;
+      } catch (e) {
+        console.warn("照片姿态检测失败", e);
+        S.pose = null;
+      }
+      S.needRender = true;
+    }
+    if (S.needRender) {
+      S.needRender = false;
+      render();
+    }
+  }
+
+  const now = performance.now();
+  if (now - S.fpsClock > 600) {
+    fpsEl.textContent = S.mode === "camera" ? Math.round((S.rendered * 1000) / (now - S.fpsClock)) + " fps" : "静态渲染";
+    S.rendered = 0;
+    S.fpsClock = now;
+  }
+}
+
+function render() {
+  const W = canvas.width;
+  const H = canvas.height;
+  const src = S.mode === "camera" ? video : S.photo;
+  if (!src) return;
+
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+  ctx.setTransform(-1, 0, 0, 1, W, 0);
+  ctx.drawImage(src, 0, 0, W, H);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+
+  const bodyVisible = S.pose && visible(S.pose, [11, 12, 23, 24]) > 0.25;
+  if (!bodyVisible) {
+    if (S.mode === "camera") hint.classList.add("on");
+    return;
+  }
+  hint.classList.remove("on");
+  if (!S.shirt) return;
+
+  drawShirt(S.pose, W, H);
+}
+
+function visible(lm, idx) {
+  let sum = 0;
+  for (const i of idx) sum += lm[i] && lm[i].visibility != null ? lm[i].visibility : 1;
+  return sum / idx.length;
+}
+
+/* ---------------- 核心：网格形变贴衣 ---------------- */
+
+function drawShirt(lm, W, H) {
+  const mirror = (i) => ({ x: (1 - lm[i].x) * W, y: lm[i].y * H });
+
+  const LS = mirror(11);
+  const RS = mirror(12);
+  const LH = mirror(23);
+  const RH = mirror(24);
+
+  const shoulderW = len(sub(RS, LS));
+  let torsoLen = len(sub(mix(LH, RH, 0.5), mix(LS, RS, 0.5)));
+  if (shoulderW < 12) return;
+  // 髋部经常在画面外，模型只能靠猜。按人体比例把躯干长度夹到合理区间，
+  // 否则衣服会被拉成一张巨长的布。
+  torsoLen = Math.min(Math.max(torsoLen, shoulderW * 0.75), shoulderW * 1.7);
+
+  const anchor = {
+    mid: mix(LS, RS, 0.5),
+    hip: mix(LH, RH, 0.5),
+    shoulderW,
+    torsoLen
+  };
+
+  if (!S.smooth) {
+    S.smooth = anchor;
+  } else {
+    const k = 0.45;
+    S.smooth = {
+      mid: lerpP(S.smooth.mid, anchor.mid, k),
+      hip: lerpP(S.smooth.hip, anchor.hip, k),
+      shoulderW: num(S.smooth.shoulderW, anchor.shoulderW, k),
+      torsoLen: num(S.smooth.torsoLen, anchor.torsoLen, k)
+    };
+  }
+
+  const sm = S.smooth;
+  const axis = norm(sub(sm.hip, sm.mid));
+  if (!axis) return;
+  const edge = { x: axis.y, y: -axis.x };
+
+  const halfTop = (sm.shoulderW * S.widthScale) / 2;
+  const shirtH = sm.torsoLen * 1.45 * S.heightScale;
+  const lift = sm.torsoLen * 0.10 + S.yShift * 0.01 * sm.torsoLen;
+  const origin = add(sm.mid, mul(axis, -lift));
+
+  const iw = S.shirtW;
+  const ih = S.shirtH;
+  const dest = [];
+  const src = [];
+
+  for (let j = 0; j <= ROWS; j++) {
+    const v = j / ROWS;
+    const center = add(origin, mul(axis, shirtH * v));
+    const swell = 1 + 0.06 * v;
+    const pinch = 1 - 0.1 * Math.sin(Math.PI * v);
+    const halfW = halfTop * swell * pinch;
+    for (let i = 0; i <= COLS; i++) {
+      const u = i / COLS;
+      dest.push(add(center, mul(edge, (u - 0.5) * 2 * halfW)));
+      src.push({ x: u * iw, y: v * ih });
+    }
+  }
+
+  // 此刻 canvas 上只有画面、还没有衣服，正好用来测环境亮度
+  if (S.lightMix) sampleAmbient();
+
+  ctx.save();
+  ctx.globalAlpha = S.alpha;
+  if (S.lightMix) {
+    const k = 1 + (S.ambientLuma / Math.max(1, S.shirtLuma) - 1) * S.lightStrength;
+    const kk = Math.min(1.35, Math.max(0.75, k));
+    ctx.filter = `brightness(${kk.toFixed(3)})`;
+  }
+  for (let j = 0; j < ROWS; j++) {
+    for (let i = 0; i < COLS; i++) {
+      const a = j * (COLS + 1) + i;
+      const b = a + 1;
+      const d = a + (COLS + 1);
+      const c = d + 1;
+      tri(src[a], src[b], src[c], dest[a], dest[b], dest[c]);
+      tri(src[a], src[c], src[d], dest[a], dest[c], dest[d]);
+    }
+  }
+  ctx.restore();
+
+  if (S.showMesh) {
+    ctx.save();
+    ctx.globalAlpha = 0.85;
+    ctx.strokeStyle = "#1d9e75";
+    ctx.lineWidth = 1;
+    for (let j = 0; j < ROWS; j++) {
+      for (let i = 0; i < COLS; i++) {
+        const a = j * (COLS + 1) + i;
+        const b = a + 1;
+        const d = a + (COLS + 1);
+        const c = d + 1;
+        line(dest[a], dest[b]);
+        line(dest[a], dest[c]);
+        line(dest[b], dest[c]);
+        line(dest[c], dest[d]);
+        line(dest[a], dest[d]);
+      }
+    }
+    ctx.restore();
+  }
+
+  function line(p, q) {
+    ctx.beginPath();
+    ctx.moveTo(p.x, p.y);
+    ctx.lineTo(q.x, q.y);
+    ctx.stroke();
+  }
+}
+
+/* 把一个源三角形映射到目标三角形，绘制衣服的这一小块 */
+function tri(s0, s1, s2, d0, d1, d2) {
+  const ax = s1.x - s0.x, ay = s1.y - s0.y;
+  const bx = s2.x - s0.x, by = s2.y - s0.y;
+  const cx = d1.x - d0.x, cy = d1.y - d0.y;
+  const dx = d2.x - d0.x, dy = d2.y - d0.y;
+
+  const det = ax * by - ay * bx;
+  if (Math.abs(det) < 1e-6) return;
+
+  const m11 = (cx * by - dx * ay) / det;
+  const m21 = (dx * ax - cx * bx) / det;
+  const m12 = (cy * by - dy * ay) / det;
+  const m22 = (dy * ax - cy * bx) / det;
+
+  const tx = d0.x - (m11 * s0.x + m21 * s0.y);
+  const ty = d0.y - (m12 * s0.x + m22 * s0.y);
+
+  const g = grow(d0, d1, d2, 0.7);
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(g[0].x, g[0].y);
+  ctx.lineTo(g[1].x, g[1].y);
+  ctx.lineTo(g[2].x, g[2].y);
+  ctx.closePath();
+  ctx.clip();
+  ctx.setTransform(m11, m12, m21, m22, tx, ty);
+  ctx.drawImage(S.shirt, 0, 0);
+  ctx.restore();
+}
+
+/* 三角形从重心外扩一点，消除相邻块的接缝 */
+function grow(a, b, c, px) {
+  const cx = (a.x + b.x + c.x) / 3;
+  const cy = (a.y + b.y + c.y) / 3;
+  const push = (p) => {
+    const vx = p.x - cx, vy = p.y - cy;
+    const l = Math.hypot(vx, vy) || 1;
+    return { x: p.x + (vx / l) * px, y: p.y + (vy / l) * px };
+  };
+  return [push(a), push(b), push(c)];
+}
+
+/* ---------------- 光照采样 ---------------- */
+
+// 从已经画好画面的 canvas 上取躯干中心区域的平均亮度。
+// 此时衣服还没画上去，所以取到的是真实的皮肤 / 环境光。
+function sampleAmbient() {
+  const sm = S.smooth;
+  if (!sm || !canvas.width) return;
+  const size = Math.max(8, sm.shoulderW * 0.55);
+  const sx = sm.mid.x - size / 2;
+  const sy = sm.mid.y - size / 2;
+  try {
+    ambCtx.drawImage(canvas, sx, sy, size, size, 0, 0, 24, 24);
+    const d = ambCtx.getImageData(0, 0, 24, 24).data;
+    let sum = 0;
+    for (let i = 0; i < d.length; i += 4) {
+      sum += 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+    }
+    S.ambientLuma = sum / (d.length / 4);
+  } catch (e) {
+    /* 跨域或尺寸异常时忽略 */
+  }
+}
+
+/* ---------------- 图片加载 ---------------- */
+
+const drop = document.getElementById("drop");
+const fileInput = document.getElementById("file");
+const dropPhoto = document.getElementById("dropPhoto");
+const filePhoto = document.getElementById("filePhoto");
+const thumb = document.getElementById("thumb");
+const cutWhiteBox = document.getElementById("cutWhite");
+
+function bindDrop(el, input, handler) {
+  el.addEventListener("click", () => input.click());
+  el.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    el.classList.add("over");
+  });
+  el.addEventListener("dragleave", () => el.classList.remove("over"));
+  el.addEventListener("drop", (e) => {
+    e.preventDefault();
+    el.classList.remove("over");
+    const f = e.dataTransfer.files[0];
+    if (f) handler(f);
+  });
+  input.addEventListener("change", () => {
+    if (input.files[0]) handler(input.files[0]);
+  });
+}
+
+bindDrop(drop, fileInput, loadGarment);
+bindDrop(dropPhoto, filePhoto, loadPhoto);
+
+function loadGarment(file) {
+  if (!file.type.startsWith("image/")) return;
+  const url = URL.createObjectURL(file);
+  const img = new Image();
+  img.onload = () => {
+    const MAX = 640;
+    const s = Math.min(1, MAX / Math.max(img.width, img.height));
+    const c = document.createElement("canvas");
+    c.width = Math.max(2, Math.round(img.width * s));
+    c.height = Math.max(2, Math.round(img.height * s));
+    const cx = c.getContext("2d", { willReadFrequently: true });
+    cx.drawImage(img, 0, 0, c.width, c.height);
+
+    if (cutWhiteBox.checked && !hasAlpha(cx, c.width, c.height)) {
+      floodCutWhite(cx, c.width, c.height);
+    }
+
+    S.shirt = c;
+    S.shirtW = c.width;
+    S.shirtH = c.height;
+    S.shirtLuma = meanLuma(cx, c.width, c.height);
+
+    thumb.width = c.width;
+    thumb.height = c.height;
+    thumb.style.display = "block";
+    thumb.getContext("2d").drawImage(c, 0, 0);
+    URL.revokeObjectURL(url);
+    S.needRender = true;
+  };
+  img.src = url;
+}
+
+function loadPhoto(file) {
+  if (!file.type.startsWith("image/")) return;
+  const url = URL.createObjectURL(file);
+  const img = new Image();
+  img.onload = () => {
+    const MAX = 900;
+    const s = Math.min(1, MAX / Math.max(img.width, img.height));
+    const c = document.createElement("canvas");
+    c.width = Math.round(img.width * s);
+    c.height = Math.round(img.height * s);
+    c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+
+    S.photo = c;
+    resizeTo(c.width, c.height);
+    S.smooth = null;
+    S.photoDirty = true;
+    S.needRender = true;
+    URL.revokeObjectURL(url);
+    gate.classList.add("hide");
+  };
+  img.src = url;
+}
+
+function hasAlpha(cx, w, h) {
+  const d = cx.getImageData(0, 0, w, h).data;
+  for (let i = 3; i < d.length; i += 4 * 7) {
+    if (d[i] < 235) return true;
+  }
+  return false;
+}
+
+function meanLuma(cx, w, h) {
+  const d = cx.getImageData(0, 0, w, h).data;
+  let sum = 0;
+  let n = 0;
+  for (let i = 0; i < d.length; i += 4) {
+    if (d[i + 3] < 128) continue;
+    sum += 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+    n++;
+  }
+  return n ? sum / n : 128;
+}
+
+// 从四边洪泛填充去白底：只删掉和画面边缘连通的白色，
+// 衣服内部的白色图案不会被误伤。
+function floodCutWhite(cx, w, h) {
+  const imgData = cx.getImageData(0, 0, w, h);
+  const d = imgData.data;
+  const nearWhite = (p) => {
+    const o = p * 4;
+    const r = d[o], g = d[o + 1], b = d[o + 2];
+    const mx = r > g ? (r > b ? r : b) : g > b ? g : b;
+    const mn = r < g ? (r < b ? r : b) : g < b ? g : b;
+    return mn > 198 && mx - mn < 28;
+  };
+
+  const seen = new Uint8Array(w * h);
+  const stack = [];
+  for (let x = 0; x < w; x++) stack.push(x, (h - 1) * w + x);
+  for (let y = 0; y < h; y++) stack.push(y * w, y * w + w - 1);
+
+  while (stack.length) {
+    const p = stack.pop();
+    if (seen[p]) continue;
+    seen[p] = 1;
+    if (!nearWhite(p)) continue;
+    d[p * 4 + 3] = 0;
+    const x = p % w;
+    const y = (p - x) / w;
+    if (x > 0) stack.push(p - 1);
+    if (x < w - 1) stack.push(p + 1);
+    if (y > 0) stack.push(p - w);
+    if (y < h - 1) stack.push(p + w);
+  }
+
+  // 对 alpha 做两次 3x3 模糊，边缘不至于一刀切得那么硬
+  const a1 = new Float32Array(w * h);
+  const a2 = new Float32Array(w * h);
+  for (let i = 0; i < w * h; i++) a1[i] = d[i * 4 + 3];
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let s = 0, n = 0;
+      for (let k = -1; k <= 1; k++) {
+        const xx = x + k;
+        if (xx < 0 || xx >= w) continue;
+        s += a1[y * w + xx];
+        n++;
+      }
+      a2[y * w + x] = s / n;
+    }
+  }
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let s = 0, n = 0;
+      for (let k = -1; k <= 1; k++) {
+        const yy = y + k;
+        if (yy < 0 || yy >= h) continue;
+        s += a2[yy * w + x];
+        n++;
+      }
+      d[(y * w + x) * 4 + 3] = s / n;
+    }
+  }
+
+  cx.putImageData(imgData, 0, 0);
+}
+
+/* ---------------- 控件 ---------------- */
+
+btnCam.addEventListener("click", enterCamera);
+btnPhoto.addEventListener("click", enterPhoto);
+document.getElementById("tabCam").addEventListener("click", () => {
+  if (S.mode !== "camera") enterCamera();
+});
+document.getElementById("tabPhoto").addEventListener("click", () => {
+  if (S.mode !== "photo") enterPhoto();
+});
+
+const sliders = [
+  ["sW", "vW", "%", (v) => (S.widthScale = v / 100)],
+  ["sH", "vH", "%", (v) => (S.heightScale = v / 100)],
+  ["sY", "vY", "", (v) => (S.yShift = v)],
+  ["sA", "vA", "%", (v) => (S.alpha = v / 100)],
+  ["sL", "vL", "%", (v) => (S.lightStrength = v / 100)]
+];
+
+for (const [id, out, unit, set] of sliders) {
+  const el = document.getElementById(id);
+  const label = document.getElementById(out);
+  el.addEventListener("input", () => {
+    set(Number(el.value));
+    label.textContent = el.value + unit;
+    S.needRender = true;
+  });
+}
+
+document.getElementById("showMesh").addEventListener("change", (e) => {
+  S.showMesh = e.target.checked;
+  S.needRender = true;
+});
+document.getElementById("lightMix").addEventListener("change", (e) => {
+  S.lightMix = e.target.checked;
+  S.needRender = true;
+});
+cutWhiteBox.addEventListener("change", () => {
+  if (fileInput.files[0]) loadGarment(fileInput.files[0]);
+});
+
+/* ---------------- 向量工具 ---------------- */
+
+function sub(a, b) { return { x: a.x - b.x, y: a.y - b.y }; }
+function add(a, b) { return { x: a.x + b.x, y: a.y + b.y }; }
+function mul(a, k) { return { x: a.x * k, y: a.y * k }; }
+function len(a) { return Math.hypot(a.x, a.y); }
+function norm(a) {
+  const l = len(a);
+  return l < 1e-6 ? null : { x: a.x / l, y: a.y / l };
+}
+function mix(a, b, t) { return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t }; }
+function lerpP(a, b, t) { return { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t }; }
+function num(a, b, t) { return a + (b - a) * t; }
+
+boot();
+</script>
+</body>
+</html>

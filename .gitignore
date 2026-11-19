@@ -1,0 +1,22 @@
+# 依赖
+node_modules/
+package-lock.json
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+
+# 系统
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 日志与临时文件
+*.log
+*.tmp
+_c.mjs
+
+# 本地测试素材（衣服图 / 人像照）
+samples/
+test-assets/
